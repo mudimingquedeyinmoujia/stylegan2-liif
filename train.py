@@ -330,7 +330,7 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, devic
 
 
 if __name__ == "__main__":
-    device = "cuda"
+    device = "cuda:2"
 
     parser = argparse.ArgumentParser(description="StyleGAN2 trainer")
 
@@ -432,6 +432,7 @@ if __name__ == "__main__":
 
     n_gpu = int(os.environ["WORLD_SIZE"]) if "WORLD_SIZE" in os.environ else 1
     args.distributed = n_gpu > 1
+    print(n_gpu)
 
     if args.distributed:
         torch.cuda.set_device(args.local_rank)

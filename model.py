@@ -387,6 +387,27 @@ class ToRGB(nn.Module):
 
         return out
 
+class ToRGB_feature(nn.Module):
+    def __init__(self, in_channel, style_dim, upsample=True, blur_kernel=[1, 3, 3, 1],feat_channel=64):
+        super().__init__()
+        self.feat_channel=feat_channel
+        if upsample:
+            self.upsample = Upsample(blur_kernel)
+
+        self.conv = ModulatedConv2d(in_channel, self.feat_channel, 1, style_dim, demodulate=False)
+        self.bias = nn.Parameter(torch.zeros(1, self.feat_channel, 1, 1))
+
+    def forward(self, input, style, skip=None):
+        out = self.conv(input, style)
+        out = out + self.bias
+
+        if skip is not None:
+            skip = self.upsample(skip)
+
+            out = out + skip
+
+        return out
+
 
 class Generator(nn.Module):
     def __init__(
@@ -427,13 +448,13 @@ class Generator(nn.Module):
             1024: 16 * channel_multiplier,
         }
 
-        self.input = ConstantInput(self.channels[4])
+        self.input = ConstantInput(self.channels[4]) # 512
         self.conv1 = StyledConv(
             self.channels[4], self.channels[4], 3, style_dim, blur_kernel=blur_kernel
         )
         self.to_rgb1 = ToRGB(self.channels[4], style_dim, upsample=False)
 
-        self.log_size = int(math.log(size, 2))
+        self.log_size = int(math.log(size, 2)) # 256 --> log2(8)
         self.num_layers = (self.log_size - 2) * 2 + 1
 
         self.convs = nn.ModuleList()
@@ -448,7 +469,7 @@ class Generator(nn.Module):
             shape = [1, 1, 2 ** res, 2 ** res]
             self.noises.register_buffer(f"noise_{layer_idx}", torch.randn(*shape))
 
-        for i in range(3, self.log_size + 1):
+        for i in range(3, self.log_size + 1): # from 2^3 - 2^8
             out_channel = self.channels[2 ** i]
 
             self.convs.append(
@@ -508,7 +529,7 @@ class Generator(nn.Module):
         randomize_noise=True,
     ):
         if not input_is_latent:
-            styles = [self.style(s) for s in styles]
+            styles = [self.style(s) for s in styles] # styles: list of latent code/ 1 or 2
 
         if noise is None:
             if randomize_noise:
@@ -529,24 +550,24 @@ class Generator(nn.Module):
             styles = style_t
 
         if len(styles) < 2:
-            inject_index = self.n_latent
+            inject_index = self.n_latent # = blocks 256 --> 6
 
             if styles[0].ndim < 3:
-                latent = styles[0].unsqueeze(1).repeat(1, inject_index, 1)
+                latent = styles[0].unsqueeze(1).repeat(1, inject_index, 1) # batch,blocks,ndim
 
             else:
                 latent = styles[0]
 
-        else:
+        else: # choose 1-5 block inject style0 another style1
             if inject_index is None:
-                inject_index = random.randint(1, self.n_latent - 1)
+                inject_index = random.randint(1, self.n_latent - 1) # 1-5
 
             latent = styles[0].unsqueeze(1).repeat(1, inject_index, 1)
             latent2 = styles[1].unsqueeze(1).repeat(1, self.n_latent - inject_index, 1)
 
             latent = torch.cat([latent, latent2], 1)
 
-        out = self.input(latent)
+        out = self.input(latent) # out=constant 4*4*512
         out = self.conv1(out, latent[:, 0], noise=noise[0])
 
         skip = self.to_rgb1(out, latent[:, 1])
@@ -696,3 +717,347 @@ class Discriminator(nn.Module):
 
         return out
 
+
+### for liif
+class Generator_liif(nn.Module):
+    def __init__(
+        self,
+        size,
+        style_dim,
+        n_mlp,
+        channel_multiplier=2,
+        blur_kernel=[1, 3, 3, 1],
+        lr_mlp=0.01,
+        feature_channel=64,
+        feature_size=128,
+    ):
+        super().__init__()
+
+        self.size = size
+        ## change
+        self.size=feature_size
+        self.feature_channel=feature_channel
+
+        self.style_dim = style_dim
+
+        layers = [PixelNorm()]
+
+        for i in range(n_mlp):
+            layers.append(
+                EqualLinear(
+                    style_dim, style_dim, lr_mul=lr_mlp, activation="fused_lrelu"
+                )
+            )
+
+        self.style = nn.Sequential(*layers)
+
+        self.channels = {
+            4: 512,
+            8: 512,
+            16: 512,
+            32: 512,
+            64: 256 * channel_multiplier,
+            128: 128 * channel_multiplier,
+            256: 64 * channel_multiplier,
+            512: 32 * channel_multiplier,
+            1024: 16 * channel_multiplier,
+        }
+
+        self.input = ConstantInput(self.channels[4]) # 512
+        self.conv1 = StyledConv(
+            self.channels[4], self.channels[4], 3, style_dim, blur_kernel=blur_kernel
+        )
+        self.to_rgb1 = ToRGB_feature(self.channels[4], style_dim, upsample=False,feat_channel=self.feature_channel)
+
+        self.log_size = int(math.log(self.size, 2)) # 256 --> log2(8)
+        self.num_layers = (self.log_size - 2) * 2 + 1
+
+        self.convs = nn.ModuleList()
+        self.upsamples = nn.ModuleList()
+        self.to_rgbs = nn.ModuleList()
+        self.noises = nn.Module()
+
+        in_channel = self.channels[4]
+
+        for layer_idx in range(self.num_layers):
+            res = (layer_idx + 5) // 2
+            shape = [1, 1, 2 ** res, 2 ** res]
+            self.noises.register_buffer(f"noise_{layer_idx}", torch.randn(*shape))
+
+        for i in range(3, self.log_size + 1): # from 2^3 - 2^8
+            out_channel = self.channels[2 ** i]
+
+            self.convs.append(
+                StyledConv(
+                    in_channel,
+                    out_channel,
+                    3,
+                    style_dim,
+                    upsample=True,
+                    blur_kernel=blur_kernel,
+                )
+            )
+
+            self.convs.append(
+                StyledConv(
+                    out_channel, out_channel, 3, style_dim, blur_kernel=blur_kernel
+                )
+            )
+
+            self.to_rgbs.append(ToRGB_feature(out_channel, style_dim,feat_channel=self.feature_channel))
+
+            in_channel = out_channel
+
+        self.n_latent = self.log_size * 2 - 2
+
+    def make_noise(self):
+        device = self.input.input.device
+
+        noises = [torch.randn(1, 1, 2 ** 2, 2 ** 2, device=device)]
+
+        for i in range(3, self.log_size + 1):
+            for _ in range(2):
+                noises.append(torch.randn(1, 1, 2 ** i, 2 ** i, device=device))
+
+        return noises
+
+    def mean_latent(self, n_latent):
+        latent_in = torch.randn(
+            n_latent, self.style_dim, device=self.input.input.device
+        )
+        latent = self.style(latent_in).mean(0, keepdim=True)
+
+        return latent
+
+    def get_latent(self, input):
+        return self.style(input)
+
+    def forward(
+        self,
+        styles,
+        return_latents=False,
+        inject_index=None,
+        truncation=1,
+        truncation_latent=None,
+        input_is_latent=False,
+        noise=None,
+        randomize_noise=True,
+    ):
+        if not input_is_latent:
+            styles = [self.style(s) for s in styles] # styles: list of latent code/ 1 or 2
+
+        if noise is None:
+            if randomize_noise:
+                noise = [None] * self.num_layers
+            else:
+                noise = [
+                    getattr(self.noises, f"noise_{i}") for i in range(self.num_layers)
+                ]
+
+        if truncation < 1:
+            style_t = []
+
+            for style in styles:
+                style_t.append(
+                    truncation_latent + truncation * (style - truncation_latent)
+                )
+
+            styles = style_t
+
+        if len(styles) < 2:
+            inject_index = self.n_latent # = blocks 256 --> 6
+
+            if styles[0].ndim < 3:
+                latent = styles[0].unsqueeze(1).repeat(1, inject_index, 1) # batch,blocks,ndim
+
+            else:
+                latent = styles[0]
+
+        else: # choose 1-5 block inject style0 another style1
+            if inject_index is None:
+                inject_index = random.randint(1, self.n_latent - 1) # 1-5
+
+            latent = styles[0].unsqueeze(1).repeat(1, inject_index, 1)
+            latent2 = styles[1].unsqueeze(1).repeat(1, self.n_latent - inject_index, 1)
+
+            latent = torch.cat([latent, latent2], 1)
+
+        out = self.input(latent) # out=constant 4*4*512
+        out = self.conv1(out, latent[:, 0], noise=noise[0])
+
+        skip = self.to_rgb1(out, latent[:, 1])
+
+        i = 1
+        for conv1, conv2, noise1, noise2, to_rgb in zip(
+            self.convs[::2], self.convs[1::2], noise[1::2], noise[2::2], self.to_rgbs
+        ):
+            out = conv1(out, latent[:, i], noise=noise1)
+            out = conv2(out, latent[:, i + 1], noise=noise2)
+            skip = to_rgb(out, latent[:, i + 2], skip)
+
+            i += 2
+
+        image = skip
+
+        if return_latents:
+            return image, latent
+
+        else:
+            return image, None
+
+
+class MLP(nn.Module):
+
+    def __init__(self, in_dim, out_dim, hidden_list): # in_dim=64*9+2+2 out_dim=3 hidden_list=[256,256,256,256]
+        super().__init__()
+        layers = []
+        lastv = in_dim
+        for hidden in hidden_list:
+            layers.append(nn.Linear(lastv, hidden))
+            layers.append(nn.ReLU())
+            lastv = hidden
+        layers.append(nn.Linear(lastv, out_dim))
+        self.layers = nn.Sequential(*layers)
+
+    def forward(self, x):
+        shape = x.shape[:-1]
+        x = self.layers(x.view(-1, x.shape[-1]))
+        return x.view(*shape, -1)
+
+def make_coord(shape, ranges=None, flatten=True):
+    """ Make coordinates at grid centers.
+    """
+    coord_seqs = []
+    for i, n in enumerate(shape):
+        if ranges is None:
+            v0, v1 = -1, 1
+        else:
+            v0, v1 = ranges[i]
+        r = (v1 - v0) / (2 * n)
+        seq = v0 + r + (2 * r) * torch.arange(n).float()
+        coord_seqs.append(seq)
+    ret = torch.stack(torch.meshgrid(*coord_seqs), dim=-1)
+    if flatten:
+        ret = ret.view(-1, ret.shape[-1])
+    return ret
+
+
+class LIIF_render(torch.nn.Module):
+    def __init__(self, feature_channel=64, local_ensemble=True, feat_unfold=False, cell_decode=True):
+        super().__init__()
+        self.local_ensemble = local_ensemble
+        self.cell_decode = cell_decode
+        self.feat_unfold = feat_unfold
+        self.mlp_in_dim = feature_channel
+        if self.feat_unfold:
+            self.mlp_in_dim *= 9
+        self.mlp_in_dim += 2
+        if self.cell_decode:
+            self.mlp_in_dim += 2
+        self.imnet=MLP(in_dim=self.mlp_in_dim,out_dim=3,hidden_list=[256,256,256,256])
+
+    def query_rgb(self, feat, coord, cell=None):
+        # feat is 特征图N,C,H,W / coord  N,bsize,2
+
+        if self.imnet is None:
+            ret = F.grid_sample(feat, coord.flip(-1).unsqueeze(1),  # 1,1,n_sample,yx  为了匹配到正常坐标
+                                mode='nearest', align_corners=False)[:, :, 0, :] \
+                .permute(0, 2, 1)  # N,C,H=1,W=n_sample --->
+            return ret
+
+        if self.feat_unfold:
+            feat = F.unfold(feat, 3, padding=1).view(
+                feat.shape[0], feat.shape[1] * 9, feat.shape[2],
+                feat.shape[3])  # 1,64,67,75 ---> 1,576,67,75 因为有9个像素相邻，所以待查询的特征图每一像素由编码特征的9个相邻像素相关
+
+        if self.local_ensemble:
+            vx_lst = [-1, 1]
+            vy_lst = [-1, 1]
+            eps_shift = 1e-6
+        else:
+            vx_lst, vy_lst, eps_shift = [0], [0], 0
+
+        # field radius (global: [-1, 1])
+        rx = 2 / feat.shape[-2] / 2  # half pixel of feature map
+        ry = 2 / feat.shape[-1] / 2
+
+        feat_coord = make_coord(feat.shape[-2:], flatten=False).to(feat.device) \
+            .permute(2, 0, 1) \
+            .unsqueeze(0).expand(feat.shape[0], 2, *feat.shape[-2:])  # 1,2,67,75 是特征图 1,576,67,75的像素中心坐标
+        # print('rx {} ry {} of feature'.format(rx, ry))
+        preds = []
+        areas = []
+        for vx in vx_lst:
+            for vy in vy_lst:
+                coord_ = coord.clone()  # 1,30000,2
+                coord_[:, :, 0] += vx * rx + eps_shift
+                coord_[:, :, 1] += vy * ry + eps_shift
+                coord_.clamp_(-1 + 1e-6, 1 - 1e-6)
+                q_feat = F.grid_sample(  # 采样点在原特征图上肯定覆盖了四个特征图像素，把特征图像素的特征得到
+                    feat, coord_.flip(-1).unsqueeze(1),
+                    mode='nearest', align_corners=False)[:, :, 0, :] \
+                    .permute(0, 2, 1)  # 1,30000,576
+                q_coord = F.grid_sample(  # 把特征图像素的坐标得到
+                    feat_coord, coord_.flip(-1).unsqueeze(1),
+                    mode='nearest', align_corners=False)[:, :, 0, :] \
+                    .permute(0, 2, 1)
+                rel_coord = coord - q_coord  # 1,bsize,2
+                rel_coord[:, :, 0] *= feat.shape[-2]
+                rel_coord[:, :, 1] *= feat.shape[-1]  # scale to -1,1
+                inp = torch.cat([q_feat, rel_coord], dim=-1)  # 1,30000,578(576+2)
+                # print(coord[0,:5,:])
+                # print(q_coord[0,:5,:])
+                # print(rel_coord[0,:5,:])
+
+                if self.cell_decode:
+                    rel_cell = cell.clone()
+                    rel_cell[:, :, 0] *= feat.shape[-2]  # cell是高分辨图图像像素大小，也就是查询点周围区域大小
+                    rel_cell[:, :, 1] *= feat.shape[-1]  # rel_cell是相对大小
+                    inp = torch.cat([inp, rel_cell], dim=-1)  # 1,30000,580(576+2+2)
+
+                bs, q = coord.shape[:2]  # 1,n_sample
+                pred = self.imnet(inp.view(bs * q, -1)).view(bs, q, -1)  # 是这个特征点应有的颜色
+                preds.append(pred)  # pred : 1,30000,3
+
+                area = torch.abs(rel_coord[:, :, 0] * rel_coord[:, :, 1])
+                areas.append(area + 1e-9)  # area: 1,30000
+
+        tot_area = torch.stack(areas).sum(dim=0)  # areas: 4*1,30000 tot_area: 1,30000
+        if self.local_ensemble:
+            t = areas[0];
+            areas[0] = areas[3];
+            areas[3] = t
+            t = areas[1];
+            areas[1] = areas[2];
+            areas[2] = t
+        ret = 0
+        for pred, area in zip(preds, areas):
+            ret = ret + pred * (area / tot_area).unsqueeze(-1)
+        return ret  # 1,30000,3
+
+    def batched_predict(self, inp, coord, cell, bsize):
+
+        n = coord.shape[1]  # pixels
+        ql = 0
+        preds = []
+        while ql < n:
+            qr = min(ql + bsize, n)
+            pred = self.query_rgb(inp, coord[:, ql: qr, :], cell[:, ql: qr, :])  # query_rgb : 1,bsize,2 ---> 1,bsize,3
+            preds.append(pred)
+            ql = qr
+        pred = torch.cat(preds, dim=1)
+
+        return pred
+
+    def forward(self, img_feature, h=256, w=256, cell_scale=1, bsize=30000):
+        coord = make_coord((h, w)).to(img_feature.device)  # h*w,2
+        cell = torch.ones_like(coord).to(img_feature.device)
+        cell[:, 0] *= 2 / (h * cell_scale)  # cell_scale>=1
+        cell[:, 1] *= 2 / (w * cell_scale)
+        N = img_feature.shape[0]
+        pred = self.batched_predict(img_feature,
+                               coord.unsqueeze(0).repeat(N, 1, 1), cell.unsqueeze(0).repeat(N, 1, 1),
+                               bsize=bsize)  # 输入坐标UV，输出RGB
+        pred = pred.view(N, h, w, 3).permute(0, 3, 1, 2)  # N,pixels,3  --->  N,C,H,W
+
+        return pred
