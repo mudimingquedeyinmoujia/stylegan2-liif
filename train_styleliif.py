@@ -159,7 +159,7 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, rende
     if args.augment and args.augment_p == 0:
         ada_augment = AdaptiveAugment(args.ada_target, args.ada_length, 8, device)
 
-    sample_z = torch.randn(args.n_sample, args.latent, device=device)
+    sample_z = torch.randn(args.n_sample, args.latent, device=device) # n_sample=64
 
     for idx in pbar:
         i = idx + args.start_iter
@@ -349,7 +349,8 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, rende
 
 
 if __name__ == "__main__":
-    device = "cuda:1"
+    device = "cuda:0"
+    train_describe='no feat_unfold continue ckpt 100000'
 
     parser = argparse.ArgumentParser(description="StyleGAN2 trainer")
 
@@ -477,8 +478,9 @@ if __name__ == "__main__":
         synchronize()
 
     # set save path
+    expgroup="exp1"
     save_name= "style-liif_v"+str(args.expnum)
-    save_path = os.path.join('./save/exp1', save_name)
+    save_path = os.path.join('./save/'+expgroup, save_name)
     log, writer = utils_me.set_save_path(save_path)
 
     args.latent = 512
@@ -585,6 +587,32 @@ if __name__ == "__main__":
     )
 
     if get_rank() == 0 and wandb is not None and args.wandb:
-        wandb.init(project="stylegan 2")
+        wandb.init(project="stylegan2-liif",entity="pickle_chao",name=expgroup+"_"+save_name)
 
+    conf_dic={
+        "desc":train_describe,
+        "size": args.size,
+        "batch":args.batch,
+        "start_iter":args.start_iter,
+        "feature_channel":args.feature_channel,
+        "feature_size":args.feature_size,
+        "ckpt":args.ckpt,
+        "latent":args.latent,
+        "n_mlp":args.n_mlp,
+        "lr":args.lr,
+        "r1": args.r1,
+        "mixing":args.mixing,
+        "path_regularize": args.path_regularize,
+        "path_batch_shrink": args.path_batch_shrink,
+        "d_reg_every": args.d_reg_every,
+        "g_reg_every": args.g_reg_every,
+        "n_sample": args.n_sample,
+        "augment":args.augment,
+        "augment_p":args.augment_p,
+        "ada_target":args.ada_target,
+        "ada_length":args.ada_length,
+        "ada_every":args.ada_every,
+    }
+    wandb.config.update(conf_dic)
+    log(train_describe)
     train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, render, r_optim, device,save_path,log,writer)

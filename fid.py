@@ -13,7 +13,7 @@ from calc_inception import load_patched_inception_v3
 
 @torch.no_grad()
 def extract_feature_from_samples(
-    generator, inception, truncation, truncation_latent, batch_size, n_sample, device
+    g, inception, truncation, truncation_latent, batch_size, n_sample, device
 ):
     n_batch = n_sample // batch_size
     resid = n_sample - (n_batch * batch_size)
@@ -58,7 +58,7 @@ def calc_fid(sample_mean, sample_cov, real_mean, real_cov, eps=1e-6):
 
 
 if __name__ == "__main__":
-    device = "cuda"
+    device = "cuda:2"
 
     parser = argparse.ArgumentParser(description="Calculate FID scores")
 
@@ -103,7 +103,7 @@ if __name__ == "__main__":
 
     if args.truncation < 1:
         with torch.no_grad():
-            mean_latent = g.mean_latent(args.truncation_mean)
+            mean_latent = g.mean_latent(args.truncation_mean) # passed style transfer
 
     else:
         mean_latent = None
@@ -115,6 +115,7 @@ if __name__ == "__main__":
         g, inception, args.truncation, mean_latent, args.batch, args.n_sample, device
     ).numpy()
     print(f"extracted {features.shape[0]} features")
+    print(f"feature size {features.shape}")
 
     sample_mean = np.mean(features, 0)
     sample_cov = np.cov(features, rowvar=False)

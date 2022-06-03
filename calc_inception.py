@@ -74,7 +74,7 @@ def extract_features(loader, inception, device):
 
 
 if __name__ == "__main__":
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 
     parser = argparse.ArgumentParser(
         description="Calculate Inception v3 features for datasets"
@@ -120,11 +120,12 @@ if __name__ == "__main__":
     features = features[: args.n_sample]
 
     print(f"extracted {features.shape[0]} features")
+    print(f"feature shape {features.shape}")
 
     mean = np.mean(features, 0)
     cov = np.cov(features, rowvar=False)
 
     name = os.path.splitext(os.path.basename(args.path))[0]
 
-    with open(f"inception_{name}.pkl", "wb") as f:
+    with open(f"evals/inception/inception_dataset_{name}_res{args.size}.pkl", "wb") as f:
         pickle.dump({"mean": mean, "cov": cov, "size": args.size, "path": args.path}, f)

@@ -3,6 +3,10 @@ from io import BytesIO
 import lmdb
 from PIL import Image
 from torch.utils.data import Dataset
+from torchvision import transforms
+from torch.utils.data import DataLoader
+import matplotlib.pyplot as plt
+from matplotlib.pyplot import imshow
 
 
 class MultiResolutionDataset(Dataset):
@@ -38,3 +42,30 @@ class MultiResolutionDataset(Dataset):
         img = self.transform(img)
 
         return img
+
+
+if __name__ == '__main__':
+    transform = transforms.Compose(
+        [
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.ToTensor(),
+        ]
+    )
+    dset256 = MultiResolutionDataset('/home/sunlab/2021Studets/gaochao/datasets/style/lmdb_mul', transform=transform, resolution=256)
+    dset512 = MultiResolutionDataset('/home/sunlab/2021Studets/gaochao/datasets/style/lmdb_mul', transform=transform, resolution=512)
+    dset1024 = MultiResolutionDataset('/home/sunlab/2021Studets/gaochao/datasets/style/lmdb_mul', transform=transform, resolution=1024)
+
+    loader256 = DataLoader(dset256, batch_size=4, num_workers=0)
+    loader512 = DataLoader(dset512, batch_size=4, num_workers=0)
+    loader1024 = DataLoader(dset1024, batch_size=4, num_workers=0)
+
+    _,img256 = next(enumerate(loader256))
+    _,img512 = next(enumerate(loader512))
+    _,img1024 = next(enumerate(loader1024))
+
+    transforms.ToPILImage()(img256[0]).save('./doc/img256.png')
+    transforms.ToPILImage()(img512[0]).save('./doc/img512.png')
+    transforms.ToPILImage()(img1024[0]).save('./doc/img1024.png')
+
+
+    print("ok")

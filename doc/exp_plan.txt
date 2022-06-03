@@ -1,0 +1,13 @@
+模型：
+1. styleGAN2
+2. styleGAN2+liif
+3. styleGAN2+liif+cutmix
+
+future：
+位置编码
+超分辨率支持： multiscale render
+
+实验：
+1. 比较styleGAN2与styleGAN2+liif与styleGAN2+liif+cutmix的FID/图像
+2. styleGAN2+liif的图像自身的SSIM与styleGAN2+liif+cutmix的图像自身的SSIM(消融实验)/图像
+3. styleGAN2的512的FID与styleGAN2+liif在256训练下的512分辨率的FID、多尺度下的FID变化曲线

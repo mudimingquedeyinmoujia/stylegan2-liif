@@ -74,7 +74,8 @@ def ensure_path(path, remove=True):
 def set_save_path(save_path, remove=True):
     ensure_path(save_path, remove=remove)
     set_log_path(save_path)
-    writer = SummaryWriter(os.path.join(save_path, 'tensorboard'))
+    # writer = SummaryWriter(os.path.join(save_path, 'tensorboard'))
+    writer=None
     return log, writer
 
 
