@@ -37,7 +37,7 @@ def img_ssim(img_base, img_as):
     return ssim_val, ms_ssim_val
 
 
-def self_ssim(scale, max_scale, step, g, r, batch, device, save_path, log, sample=1000):
+def self_ssim(scale, max_scale, step, g, r, batch, device, save_path, log, sample=10):
     scale_list = [i for i in range(scale, max_scale, step)]
     if max_scale not in scale_list:
         scale_list.append(max_scale)
@@ -46,7 +46,7 @@ def self_ssim(scale, max_scale, step, g, r, batch, device, save_path, log, sampl
     for res in scale_list:
         ssim_scale_dict.update({res: []})
         ms_ssim_scale_dict.update({res: []})
-    with torch.no_grad:
+    with torch.no_grad():
         g_ema.eval()
         render.eval()
         for i in tqdm(range(sample)):
@@ -60,8 +60,8 @@ def self_ssim(scale, max_scale, step, g, r, batch, device, save_path, log, sampl
                 ssim_val, ms_ssim_val = img_ssim(sample_base, sample_img)
                 log(f'sample: {i}, scale: {s}, ssim: {ssim_val}, ms_ssim: {ms_ssim_val}')
                 log(f'sample: {i}, scale: {s}, ssim_mean: {ssim_val.mean().item()}, ms_ssim_mean: {ms_ssim_val.mean().item()}')
-                ssim_scale_dict[s].update(ssim_val.mean().item())
-                ms_ssim_scale_dict[s].update(ms_ssim_val.mean().item())
+                ssim_scale_dict[s].append(ssim_val.mean().item())
+                ms_ssim_scale_dict[s].append(ms_ssim_val.mean().item())
 
     for s in scale_list:
         ssim_scale_dict[s] = np.mean(ssim_scale_dict[s])
@@ -77,10 +77,10 @@ def self_ssim(scale, max_scale, step, g, r, batch, device, save_path, log, sampl
 
 
 if __name__ == "__main__":
-    device = "cuda:1"
+    device = "cuda:0"
     parser = argparse.ArgumentParser(description="styleGAN2-liif-ssim")
     parser.add_argument(
-        "--batch", type=int, default=1, help="batch sizes for each gpus"
+        "--batch", type=int, default=4, help="batch sizes for each gpus"
     )
     parser.add_argument(
         "--size", type=int, default=256, help="training size of G and D"
@@ -95,7 +95,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--ckpt",
         type=str,
-        default="save/exp1/style-liif_v3/130000.pt",
+        default="save/exp1/style-liif_v3/260000.pt",
         help="path to the model checkpoint",
     )
     parser.add_argument(
@@ -119,7 +119,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--maxscale",
         type=int,
-        default=1024,
+        default=4096,
         help="maxscale",
     )
     parser.add_argument(
