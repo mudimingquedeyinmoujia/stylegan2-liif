@@ -30,6 +30,12 @@ exp1/v3 : style-liif feat_unfold-false ckpt save/exp1/style-liif_v1/100000.pt
 eval1/v1: gpu0 style-liif 80000.pt 256x256
 eval1/v2: gpu0 style-liif 80000.pt arbi res
 
-2022.06.03
-eval1/v3: gpu1 style-liif 130000pt arbi res
 
+2022.06.04
+eval1/v3: gpu0 style-liif 260000pt arbi res
+
+----------------ssim----------------
+2022.06.04
+save/ssims/v1: 260000.pt 256-4096 false
+save/ssims/v2: 260000.pt 256-4096 sample=10 bsize=8 false
+save/ssims/v3: 260000.pt 256-4096 sample=10 bsize=4

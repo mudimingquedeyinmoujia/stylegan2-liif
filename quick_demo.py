@@ -56,7 +56,7 @@ def generate_as(args, g_ema, device, mean_latent,render,save_path,log,writer):
                 )
 
 if __name__ == "__main__":
-    device = "cuda:1"
+    device = "cuda:0"
 
     parser = argparse.ArgumentParser(description="use G and R generate arbitrary scale image")
     parser.add_argument(
@@ -81,7 +81,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--ckpt",
         type=str,
-        default="save/exp1/style-liif_v3/130000.pt",
+        default="save/exp1/style-liif_v3/260000.pt",
         help="path to the model checkpoint",
     )
     parser.add_argument(
@@ -131,5 +131,5 @@ if __name__ == "__main__":
             mean_latent = g_ema.mean_latent(args.truncation_mean)
     else:
         mean_latent = None
-
+    log('ckpt is '+args.ckpt)
     generate_as(args, g_ema, device, mean_latent,render,save_path,log,writer)
