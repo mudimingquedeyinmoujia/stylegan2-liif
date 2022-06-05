@@ -172,6 +172,7 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, rende
         real_img = next(loader)
         real_img = real_img.to(device)
 
+        ## phase 1: D
         requires_grad(generator, False)
         requires_grad(render,False)
         requires_grad(discriminator, True)
@@ -179,7 +180,7 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, rende
         noise = mixing_noise(args.batch, args.latent, args.mixing, device)
         fake_img_feature, _ = generator(noise)
         fake_img=render(fake_img_feature,h=args.size,w=args.size)
-        # todo: when optim D: generate multi scale fake image and cut-mix
+
 
         if args.augment:
             real_img_aug, _ = augment(real_img, ada_aug_p)
@@ -205,7 +206,7 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, rende
             r_t_stat = ada_augment.r_t_stat
 
         d_regularize = i % args.d_reg_every == 0
-
+        ## phase 2: D reg
         if d_regularize:
             real_img.requires_grad = True
 
@@ -224,15 +225,14 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, rende
             d_optim.step()
 
         loss_dict["r1"] = r1_loss
-
+        # phase 3: G
         requires_grad(generator, True)
-        requires_grad(render,True)
         requires_grad(discriminator, False)
-
+        requires_grad(render,True)
         noise = mixing_noise(args.batch, args.latent, args.mixing, device)
         fake_img_feature, _ = generator(noise)
         fake_img = render(fake_img_feature, h=args.size, w=args.size)
-        # todo: when optim G: generate multi scale fake image and cut-mix
+
 
         if args.augment:
             fake_img, _ = augment(fake_img, ada_aug_p)
@@ -246,8 +246,10 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, rende
         render.zero_grad()
         g_loss.backward()
         g_optim.step()
-        r_optim.step()
+        if i % 16 == 0:
+            r_optim.step()
 
+        # phase 4: G reg
         g_regularize = i % args.g_reg_every == 0
 
         if g_regularize:
@@ -278,6 +280,12 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, rende
 
         loss_dict["path"] = path_loss
         loss_dict["path_length"] = path_lengths.mean()
+
+        # phase 5: R
+        # requires_grad(generator, False)
+        # requires_grad(discriminator, False)
+        # requires_grad(render, True)
+
 
         accumulate(g_ema, g_module, accum)
 
@@ -350,7 +358,7 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, rende
 
 if __name__ == "__main__":
     device = "cuda:0"
-    train_describe='no feat_unfold continue ckpt 100000'
+    train_describe='dev idea'
 
     parser = argparse.ArgumentParser(description="StyleGAN2 trainer")
 
@@ -523,8 +531,8 @@ if __name__ == "__main__":
     )
     r_optim=optim.Adam(
         render.parameters(),
-        lr=args.lr * g_reg_ratio,
-        betas=(0 ** g_reg_ratio, 0.99 ** g_reg_ratio),
+        lr=args.lr,
+        betas=(0, 0.99),
     )
 
     if args.ckpt is not None:
