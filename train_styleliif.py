@@ -2,7 +2,7 @@ import argparse
 import math
 import random
 import os
-
+from pytorch_msssim import ssim, ms_ssim, SSIM, MS_SSIM
 import numpy as np
 import torch
 from torch import nn, autograd, optim
@@ -18,7 +18,6 @@ try:
 
 except ImportError:
     wandb = None
-
 
 from dataset import MultiResolutionDataset
 from distributed import (
@@ -62,6 +61,10 @@ def sample_data(loader):
             yield batch
 
 
+def d_reg_loss(r1, r1_loss, d_reg_every, real_pred):
+    return r1 / 2 * r1_loss * d_reg_every + 0 * real_pred[0]
+
+
 def d_logistic_loss(real_pred, fake_pred):
     real_loss = F.softplus(-real_pred)
     fake_loss = F.softplus(fake_pred)
@@ -78,11 +81,17 @@ def d_r1_loss(real_pred, real_img):
 
     return grad_penalty
 
+def my_ssim_loss(ssim_lo):
+    return 1-ssim_lo
 
 def g_nonsaturating_loss(fake_pred):
     loss = F.softplus(-fake_pred).mean()
 
     return loss
+
+
+def gplr_loss(path_regularize, g_reg_every, path_loss):
+    return path_regularize * g_reg_every * path_loss
 
 
 def g_path_regularize(fake_img, latents, mean_path_length, decay=0.01):
@@ -124,7 +133,8 @@ def set_grad_none(model, targets):
             p.grad = None
 
 
-def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, render, r_optim,device,save_path,log,writer):
+def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, render, r_optim, device, save_path, log,
+          writer):
     loader = sample_data(loader)
 
     pbar = range(args.iter)
@@ -159,7 +169,16 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, rende
     if args.augment and args.augment_p == 0:
         ada_augment = AdaptiveAugment(args.ada_target, args.ada_length, 8, device)
 
-    sample_z = torch.randn(args.n_sample, args.latent, device=device) # n_sample=64
+    sample_z = torch.randn(args.n_sample, args.latent, device=device)  # n_sample=64
+    ssim_loss = MS_SSIM(win_size=11, win_sigma=1.5, data_range=1, size_average=True, channel=3)
+    ## watch model grad and paras
+    grd = (generator, render, discriminator)
+    wandb.watch(grd, criterion=None, log="all", log_freq=100, log_graph=True, idx=0)
+    wandb.watch(grd, criterion=d_logistic_loss, log="all", log_freq=100, log_graph=True, idx=1)
+    wandb.watch(grd, criterion=d_reg_loss, log="all", log_freq=100, log_graph=True, idx=2)
+    wandb.watch(grd, criterion=g_nonsaturating_loss, log="all", log_freq=100, log_graph=True, idx=3)
+    wandb.watch(grd, criterion=my_ssim_loss, log="all", log_freq=100, log_graph=True, idx=4)
+    wandb.watch(grd, criterion=gplr_loss(), log="all", log_freq=100, log_graph=True, idx=5)
 
     for idx in pbar:
         i = idx + args.start_iter
@@ -174,13 +193,12 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, rende
 
         ## phase 1: D
         requires_grad(generator, False)
-        requires_grad(render,False)
+        requires_grad(render, False)
         requires_grad(discriminator, True)
 
         noise = mixing_noise(args.batch, args.latent, args.mixing, device)
         fake_img_feature, _ = generator(noise)
-        fake_img=render(fake_img_feature,h=args.size,w=args.size)
-
+        fake_img = render(fake_img_feature, h=args.size, w=args.size)
 
         if args.augment:
             real_img_aug, _ = augment(real_img, ada_aug_p)
@@ -220,7 +238,9 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, rende
             r1_loss = d_r1_loss(real_pred, real_img)
 
             discriminator.zero_grad()
-            (args.r1 / 2 * r1_loss * args.d_reg_every + 0 * real_pred[0]).backward()
+            d_reg_loss_is = d_reg_loss(args.r1, r1_loss, args.d_reg_every, real_pred)
+            # (args.r1 / 2 * r1_loss * args.d_reg_every + 0 * real_pred[0]).backward()
+            d_reg_loss_is.backward()
 
             d_optim.step()
 
@@ -228,11 +248,10 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, rende
         # phase 3: G
         requires_grad(generator, True)
         requires_grad(discriminator, False)
-        requires_grad(render,True)
+        requires_grad(render, True)
         noise = mixing_noise(args.batch, args.latent, args.mixing, device)
         fake_img_feature, _ = generator(noise)
         fake_img = render(fake_img_feature, h=args.size, w=args.size)
-
 
         if args.augment:
             fake_img, _ = augment(fake_img, ada_aug_p)
@@ -244,12 +263,40 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, rende
 
         generator.zero_grad()
         render.zero_grad()
+
         g_loss.backward()
         g_optim.step()
-        if i % 16 == 0:
-            r_optim.step()
+        r_optim.step()
 
-        # phase 4: G reg
+        # phase 4: R reg
+        render.zero_grad()
+        fake_img_re = render(fake_img_feature.detach(), h=args.size, w=args.size)
+        # _ssim_loss = 1 - ssim_loss((fake_img.detach() + 1) / 2, (fake_img_re + 1) / 2)
+        _ssim_loss=my_ssim_loss(ssim_loss((fake_img.detach() + 1) / 2, (fake_img_re + 1) / 2))
+        _ssim_loss.backward()
+        r_optim.step()
+
+        with torch.no_grad():
+            fake_img_re2 = render(fake_img_feature, h=args.size, w=args.size)
+            ssim_01 = 1 - _ssim_loss
+            ssim_12 = ssim((fake_img_re + 1) / 2, (fake_img_re2 + 1) / 2)
+            ssim_02 = ssim((fake_img + 1) / 2, (fake_img_re2 + 1) / 2)
+            loss_dict["ssim_01"] = ssim_01
+            loss_dict["ssim_12"] = ssim_12
+            loss_dict["ssim_02"] = ssim_02
+            if i % 1000 == 0:
+                svimg = torch.cat((fake_img, fake_img_re), 0)
+                svimg = torch.cat((svimg, fake_img_re2), 0)
+                sv_name = os.path.join(save_path, f"{str(i).zfill(6)}_ssim.png")
+                utils.save_image(
+                    svimg,
+                    sv_name,
+                    nrow=int(args.batch),
+                    normalize=True,
+                    range=(-1, 1),
+                )
+
+        # phase 5: G reg
         g_regularize = i % args.g_reg_every == 0
 
         if g_regularize:
@@ -264,7 +311,8 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, rende
 
             generator.zero_grad()
             # render.zero_grad()
-            weighted_path_loss = args.path_regularize * args.g_reg_every * path_loss
+            # weighted_path_loss = args.path_regularize * args.g_reg_every * path_loss
+            weighted_path_loss = gplr_loss(args.path_regularize, args.g_reg_every, path_loss)
 
             if args.path_batch_shrink:
                 weighted_path_loss += 0 * fake_img[0, 0, 0, 0]
@@ -275,17 +323,11 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, rende
             # r_optim.step()
 
             mean_path_length_avg = (
-                reduce_sum(mean_path_length).item() / get_world_size()
+                    reduce_sum(mean_path_length).item() / get_world_size()
             )
 
         loss_dict["path"] = path_loss
         loss_dict["path_length"] = path_lengths.mean()
-
-        # phase 5: R
-        # requires_grad(generator, False)
-        # requires_grad(discriminator, False)
-        # requires_grad(render, True)
-
 
         accumulate(g_ema, g_module, accum)
 
@@ -298,6 +340,9 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, rende
         real_score_val = loss_reduced["real_score"].mean().item()
         fake_score_val = loss_reduced["fake_score"].mean().item()
         path_length_val = loss_reduced["path_length"].mean().item()
+        ssim_01_val = loss_dict["ssim_01"].mean().item()
+        ssim_12_val = loss_dict["ssim_12"].mean().item()
+        ssim_02_val = loss_dict["ssim_02"].mean().item()
 
         if get_rank() == 0:
             pbar.set_description(
@@ -321,6 +366,9 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, rende
                         "Real Score": real_score_val,
                         "Fake Score": fake_score_val,
                         "Path Length": path_length_val,
+                        "ssim 01": ssim_01_val,
+                        "ssim 12": ssim_12_val,
+                        "ssim 02": ssim_02_val,
                     }
                 )
 
@@ -329,7 +377,7 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, rende
                     g_ema.eval()
                     sample_feature, _ = g_ema([sample_z])
                     sample = render(sample_feature, h=args.size, w=args.size)
-                    fname=os.path.join(save_path,f"{str(i).zfill(6)}.png")
+                    fname = os.path.join(save_path, f"{str(i).zfill(6)}.png")
                     utils.save_image(
                         sample,
                         fname,
@@ -357,8 +405,8 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, rende
 
 
 if __name__ == "__main__":
-    device = "cuda:0"
-    train_describe='dev idea'
+    device = "cuda:1"
+    train_describe = 'dev idea for R regular ms-ssim training'
 
     parser = argparse.ArgumentParser(description="StyleGAN2 trainer")
 
@@ -473,12 +521,11 @@ if __name__ == "__main__":
         help="probability update interval of the adaptive augmentation",
     )
 
-
     args = parser.parse_args()
 
     n_gpu = int(os.environ["WORLD_SIZE"]) if "WORLD_SIZE" in os.environ else 1
     args.distributed = n_gpu > 1
-    print('gpu_use: ',n_gpu)
+    print('gpu_use: ', n_gpu)
 
     if args.distributed:
         torch.cuda.set_device(args.local_rank)
@@ -486,9 +533,9 @@ if __name__ == "__main__":
         synchronize()
 
     # set save path
-    expgroup="exp1"
-    save_name= "style-liif_v"+str(args.expnum)
-    save_path = os.path.join('./save/'+expgroup, save_name)
+    expgroup = "exp2"
+    save_name = "style-liif_v" + str(args.expnum)
+    save_path = os.path.join('./save/' + expgroup, save_name)
     log, writer = utils_me.set_save_path(save_path)
 
     args.latent = 512
@@ -504,15 +551,15 @@ if __name__ == "__main__":
 
     generator = Generator_liif(
         args.size, args.latent, args.n_mlp, channel_multiplier=args.channel_multiplier,
-        feature_channel=args.feature_channel,feature_size=args.feature_size).to(device)
+        feature_channel=args.feature_channel, feature_size=args.feature_size).to(device)
     discriminator = Discriminator(
         args.size, channel_multiplier=args.channel_multiplier
     ).to(device)
     g_ema = Generator_liif(
         args.size, args.latent, args.n_mlp, channel_multiplier=args.channel_multiplier,
-        feature_channel=args.feature_channel,feature_size=args.feature_size).to(device)
+        feature_channel=args.feature_channel, feature_size=args.feature_size).to(device)
     g_ema.eval()
-    render=LIIF_render(feature_channel=args.feature_channel).to(device)
+    render = LIIF_render(feature_channel=args.feature_channel).to(device)
 
     accumulate(g_ema, generator, 0)
 
@@ -529,7 +576,7 @@ if __name__ == "__main__":
         lr=args.lr * d_reg_ratio,
         betas=(0 ** d_reg_ratio, 0.99 ** d_reg_ratio),
     )
-    r_optim=optim.Adam(
+    r_optim = optim.Adam(
         render.parameters(),
         lr=args.lr,
         betas=(0, 0.99),
@@ -595,32 +642,33 @@ if __name__ == "__main__":
     )
 
     if get_rank() == 0 and wandb is not None and args.wandb:
-        wandb.init(project="stylegan2-liif",entity="pickle_chao",name=expgroup+"_"+save_name)
+        wandb.init(project="stylegan2-liif", entity="pickle_chao", name=expgroup + "_" + save_name)
 
-    conf_dic={
-        "desc":train_describe,
+    conf_dic = {
+        "desc": train_describe,
         "size": args.size,
-        "batch":args.batch,
-        "start_iter":args.start_iter,
-        "feature_channel":args.feature_channel,
-        "feature_size":args.feature_size,
-        "ckpt":args.ckpt,
-        "latent":args.latent,
-        "n_mlp":args.n_mlp,
-        "lr":args.lr,
+        "batch": args.batch,
+        "start_iter": args.start_iter,
+        "feature_channel": args.feature_channel,
+        "feature_size": args.feature_size,
+        "ckpt": args.ckpt,
+        "latent": args.latent,
+        "n_mlp": args.n_mlp,
+        "lr": args.lr,
         "r1": args.r1,
-        "mixing":args.mixing,
+        "mixing": args.mixing,
         "path_regularize": args.path_regularize,
         "path_batch_shrink": args.path_batch_shrink,
         "d_reg_every": args.d_reg_every,
         "g_reg_every": args.g_reg_every,
         "n_sample": args.n_sample,
-        "augment":args.augment,
-        "augment_p":args.augment_p,
-        "ada_target":args.ada_target,
-        "ada_length":args.ada_length,
-        "ada_every":args.ada_every,
+        "augment": args.augment,
+        "augment_p": args.augment_p,
+        "ada_target": args.ada_target,
+        "ada_length": args.ada_length,
+        "ada_every": args.ada_every,
     }
     wandb.config.update(conf_dic)
     log(train_describe)
-    train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, render, r_optim, device,save_path,log,writer)
+    train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, render, r_optim, device, save_path, log,
+          writer)

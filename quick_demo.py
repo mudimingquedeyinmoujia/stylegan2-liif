@@ -43,7 +43,8 @@ def generate_as(args, g_ema, device, mean_latent,render,save_path,log,writer):
             sample_feature, _ = g_ema(
                 [sample_z], truncation=args.truncation, truncation_latent=mean_latent
             )
-            res_list=[i for i in range(args.size,4096,512)]+[4096]
+            # res_list=[i for i in range(args.size,4096,512)]+[4096]
+            res_list=[i for i in range(16,512,20)]+[512]
             for s in res_list:
                 sample=render(sample_feature,h=s,w=s)
                 fname=os.path.join(save_path,f"eval_{str(i).zfill(3)}_res{str(s).zfill(4)}.png")
@@ -69,7 +70,7 @@ if __name__ == "__main__":
         help="number of samples to be generated for each image",
     )
     parser.add_argument(
-        "--pics", type=int, default=6, help="number of images to be generated"
+        "--pics", type=int, default=12, help="number of images to be generated"
     )
     parser.add_argument("--truncation", type=float, default=1, help="truncation ratio")
     parser.add_argument(
@@ -81,7 +82,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--ckpt",
         type=str,
-        default="save/exp1/style-liif_v3/260000.pt",
+        default="save/exp2/style-liif_v2/210000.pt",
         help="path to the model checkpoint",
     )
     parser.add_argument(
@@ -121,10 +122,11 @@ if __name__ == "__main__":
         args.size, args.latent, args.n_mlp, channel_multiplier=args.channel_multiplier,
         feature_channel=args.feature_channel, feature_size=args.feature_size).to(device)
     render = LIIF_render(feature_channel=args.feature_channel).to(device)
-    checkpoint = torch.load(args.ckpt)
+    checkpoint = torch.load(args.ckpt,map_location=lambda storage, loc: storage)
 
     g_ema.load_state_dict(checkpoint["g_ema"])
     render.load_state_dict(checkpoint["r"])
+
 
     if args.truncation < 1:
         with torch.no_grad():

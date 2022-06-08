@@ -57,6 +57,7 @@ def calc_fid(sample_mean, sample_cov, real_mean, real_cov, eps=1e-6):
     return fid
 
 
+
 if __name__ == "__main__":
     device = "cuda:2"
 

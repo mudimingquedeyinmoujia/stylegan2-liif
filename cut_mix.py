@@ -27,9 +27,9 @@ if __name__ == '__main__':
     from torchvision.transforms import ToTensor
     from PIL import Image
     to_tensor = ToTensor()
-    a = to_tensor(Image.open('../1.png').convert('RGB').resize((256, 256))).view(1, 3, 256, 256)
-    b = to_tensor(Image.open('../2.png').convert("RGB").resize((512, 512))).view(1, 3, 512, 512)
+    a = to_tensor(Image.open('evals/eval_1/eval_v3/eval_000_res2304.png').convert('RGB').resize((256, 256))).view(1, 3, 256, 256)
+    b = to_tensor(Image.open('evals/eval_1/eval_v3/eval_001_res0256.png').convert("RGB").resize((512, 512))).view(1, 3, 512, 512)
     print(a.shape, b.shape)
     ret = cutMix(a, b)
-    Image.fromarray((ret[0] * 255).permute(1, 2, 0).numpy().astype(np.uint8)).save("../ret.png")
+    Image.fromarray((ret[0] * 255).permute(1, 2, 0).numpy().astype(np.uint8)).save("evals/eval_1/eval_v3/eval_000_cutmix.png")
     
