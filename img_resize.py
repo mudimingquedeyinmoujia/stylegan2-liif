@@ -3,7 +3,7 @@ from PIL import Image
 from torchvision import transforms
 import os
 
-imgpath='evals/eval_1/eval_v2/eval_000_res256.png'
+imgpath='evals/eval_2/eval_v1/eval_004_res0256.png'
 imgname=imgpath.split('/')[-1].rstrip('.png')
 savepath=imgpath.rstrip(imgpath.split('/')[-1])
 
@@ -29,7 +29,7 @@ trans_dict={'near':transform_near,'bili':transform_bili,'bicub':transform_bicub,
 
 for key in trans_dict:
     img_trans=trans_dict[key](img)
-    svp_name=os.path.join(savepath,imgname+f'_to_res512_{key}.png')
+    svp_name=os.path.join(savepath,imgname+f'_to_res0512_{key}.png')
     transforms.ToPILImage()(img_trans).save(svp_name)
 
 

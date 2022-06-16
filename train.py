@@ -330,7 +330,7 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, devic
 
 
 if __name__ == "__main__":
-    device = "cuda:2"
+    device = "cuda:1"
 
     parser = argparse.ArgumentParser(description="StyleGAN2 trainer")
 

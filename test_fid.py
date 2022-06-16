@@ -9,7 +9,7 @@ from tqdm import tqdm
 import os
 from model import Generator
 from calc_inception import load_patched_inception_v3
-
+from model import Generator_liif, Discriminator, LIIF_render
 
 @torch.no_grad()
 def extract_feature_from_samples(
@@ -64,7 +64,7 @@ def get_mc(incep):
     return real_mean,real_cov
 
 if __name__ == "__main__":
-    # device = "cuda:1"
+    device = "cuda:2"
     #
     # incep1="evals/inception/inception_dataset_lmdb_256_res256.pkl"
     # incep2="evals/inception/inception_dataset_lmdb_mul_res512.pkl"
@@ -83,7 +83,11 @@ if __name__ == "__main__":
     #         print(f"{i} with {j} the fid is {fid}")
 
     # test 2
-    ckpt_dir="save/exp2/style-liif_v1"
-    ckpt_list = [i for i in os.listdir(ckpt_dir) if i.endswith('.pt')]
-    print(ckpt_list)
+    # ckpt_dir="save/exp2/style-liif_v1"
+    # ckpt_list = [i for i in os.listdir(ckpt_dir) if i.endswith('.pt')]
+    # print(ckpt_list)
+
+    # test3
+    g=Generator_liif(256,512,8).to(device)
+    print("opk")
 

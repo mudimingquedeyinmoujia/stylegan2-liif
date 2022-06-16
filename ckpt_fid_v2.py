@@ -6,7 +6,7 @@ from torch import nn
 import numpy as np
 from scipy import linalg
 from tqdm import tqdm
-from model import Generator_liif, LIIF_render
+from model import Generator,Generator_liif, LIIF_render
 from calc_inception import load_patched_inception_v3
 import os
 import utils_me
@@ -24,7 +24,7 @@ def extract_feature_from_samples(
 
     for batch in tqdm(batch_sizes, desc="res_" + str(res) + "_batches"):
         latent = torch.randn(batch, 512, device=device)
-        img_feature, _ = g([latent], truncation=truncation, truncation_latent=truncation_latent)
+        img_im, img_feature = g([latent], truncation=truncation, truncation_latent=truncation_latent)
         img = r(img_feature, h=res, w=res)
         feat = inception(img)[0].view(img.shape[0], -1)
         features.append(feat.to("cpu"))
@@ -87,7 +87,7 @@ def fid_ares(ckpt_name, g, r, inception, log):
 
 
 if __name__ == "__main__":
-    device = "cuda:1"
+    device = "cuda:0"
 
     parser = argparse.ArgumentParser(description="Calculate ckpt FID scores")
 
@@ -124,16 +124,16 @@ if __name__ == "__main__":
     parser.add_argument(
         "--feature_channel",
         type=int,
-        default=64,
+        default=128,
         help="probability update interval of the adaptive augmentation",
     )
     parser.add_argument(
         "--feature_size",
         type=int,
-        default=128,
+        default=256,
         help="probability update interval of the adaptive augmentation",
     )
-    child_dir = ['style-liif_v1', 'style-liif_v2', 'style-liif_v4', 'style-liif_v7']
+    child_dir = ['style-liif_v0']
     args = parser.parse_args()
     save_name = args.ckpt_dir.split('/')[-1]
     for nm in child_dir:
@@ -158,9 +158,8 @@ if __name__ == "__main__":
     args.latent = 512
     args.n_mlp = 8
 
-    g_ema = Generator_liif(
-        args.size, args.latent, args.n_mlp, channel_multiplier=args.channel_multiplier,
-        feature_channel=args.feature_channel, feature_size=args.feature_size).to(device)
+    g_ema = Generator(
+        args.size, args.latent, args.n_mlp, channel_multiplier=args.channel_multiplier).to(device)
     g_ema.eval()
     render = LIIF_render(feature_channel=args.feature_channel).to(device)
     # inception = nn.DataParallel(load_patched_inception_v3()).to(device)

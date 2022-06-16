@@ -320,7 +320,7 @@ class ConstantInput(nn.Module):
     def __init__(self, channel, size=4):
         super().__init__()
 
-        self.input = nn.Parameter(torch.randn(1, channel, size, size))
+        self.input = nn.Parameter(torch.randn(1, channel, size, size)) # 1,512,4,4
 
     def forward(self, input):
         batch = input.shape[0]
@@ -421,9 +421,9 @@ class Generator(nn.Module):
     ):
         super().__init__()
 
-        self.size = size
+        self.size = size # generate img size = 256
 
-        self.style_dim = style_dim
+        self.style_dim = style_dim # 512 dim
 
         layers = [PixelNorm()]
 
@@ -434,42 +434,42 @@ class Generator(nn.Module):
                 )
             )
 
-        self.style = nn.Sequential(*layers)
+        self.style = nn.Sequential(*layers) # N,512 ---> MLP ---> N,512
 
         self.channels = {
             4: 512,
             8: 512,
             16: 512,
             32: 512,
-            64: 256 * channel_multiplier,
-            128: 128 * channel_multiplier,
-            256: 64 * channel_multiplier,
-            512: 32 * channel_multiplier,
-            1024: 16 * channel_multiplier,
+            64: 256 * channel_multiplier, # 512
+            128: 128 * channel_multiplier, # 256
+            256: 64 * channel_multiplier, # 128
+            512: 32 * channel_multiplier, # 64
+            1024: 16 * channel_multiplier, # 32
         }
 
-        self.input = ConstantInput(self.channels[4]) # 512
+        self.input = ConstantInput(self.channels[4]) # 512,4,4
         self.conv1 = StyledConv(
             self.channels[4], self.channels[4], 3, style_dim, blur_kernel=blur_kernel
         )
         self.to_rgb1 = ToRGB(self.channels[4], style_dim, upsample=False)
 
-        self.log_size = int(math.log(size, 2)) # 256 --> log2(8)
-        self.num_layers = (self.log_size - 2) * 2 + 1
+        self.log_size = int(math.log(size, 2)) # 256 --> log2(8) log_size=8
+        self.num_layers = (self.log_size - 2) * 2 + 1 # 6*2 + 1
 
         self.convs = nn.ModuleList()
         self.upsamples = nn.ModuleList()
         self.to_rgbs = nn.ModuleList()
         self.noises = nn.Module()
 
-        in_channel = self.channels[4]
+        in_channel = self.channels[4] # 512
 
         for layer_idx in range(self.num_layers):
-            res = (layer_idx + 5) // 2
+            res = (layer_idx + 5) // 2 # 0,1,2,3,4,5,6,7,8,9,10,11,12->2,3,3,4,4,5,5,6,6,7,7,8
             shape = [1, 1, 2 ** res, 2 ** res]
             self.noises.register_buffer(f"noise_{layer_idx}", torch.randn(*shape))
 
-        for i in range(3, self.log_size + 1): # from 2^3 - 2^8
+        for i in range(3, self.log_size + 1): # from 3,4,5,6,7,8
             out_channel = self.channels[2 ** i]
 
             self.convs.append(
@@ -493,7 +493,7 @@ class Generator(nn.Module):
 
             in_channel = out_channel
 
-        self.n_latent = self.log_size * 2 - 2
+        self.n_latent = self.log_size * 2 - 2 # 14
 
     def make_noise(self):
         device = self.input.input.device
@@ -550,24 +550,24 @@ class Generator(nn.Module):
             styles = style_t
 
         if len(styles) < 2:
-            inject_index = self.n_latent # = blocks 256 --> 6
+            inject_index = self.n_latent # = 14
 
-            if styles[0].ndim < 3:
-                latent = styles[0].unsqueeze(1).repeat(1, inject_index, 1) # batch,blocks,ndim
+            if styles[0].ndim < 3: # N,512
+                latent = styles[0].unsqueeze(1).repeat(1, inject_index, 1) # N,14,512
 
             else:
                 latent = styles[0]
 
         else: # choose 1-5 block inject style0 another style1
             if inject_index is None:
-                inject_index = random.randint(1, self.n_latent - 1) # 1-5
+                inject_index = random.randint(1, self.n_latent - 1) # int in [1,13]
 
             latent = styles[0].unsqueeze(1).repeat(1, inject_index, 1)
             latent2 = styles[1].unsqueeze(1).repeat(1, self.n_latent - inject_index, 1)
 
             latent = torch.cat([latent, latent2], 1)
 
-        out = self.input(latent) # out=constant 4*4*512
+        out = self.input(latent) # N,14,512 style latent ---> N,512,4,4 img
         out = self.conv1(out, latent[:, 0], noise=noise[0])
 
         skip = self.to_rgb1(out, latent[:, 1])
@@ -588,7 +588,7 @@ class Generator(nn.Module):
             return image, latent
 
         else:
-            return image, None
+            return image, out.detach() # image [N,3,256,256] out [N,128,256,256]
 
 
 class ConvLayer(nn.Sequential):

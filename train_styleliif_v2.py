@@ -12,6 +12,7 @@ import torch.distributed as dist
 from torchvision import transforms, utils
 from tqdm import tqdm
 import utils_me
+from torchstat import stat
 
 try:
     import wandb
@@ -81,8 +82,10 @@ def d_r1_loss(real_pred, real_img):
 
     return grad_penalty
 
-def my_ssim_loss(ssim_lo):
-    return 1-ssim_lo
+
+def my_ssim_loss(ssim_metric):
+    return 1 - ssim_metric
+
 
 def g_nonsaturating_loss(fake_pred):
     loss = F.softplus(-fake_pred).mean()
@@ -170,12 +173,13 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, rende
         ada_augment = AdaptiveAugment(args.ada_target, args.ada_length, 8, device)
 
     sample_z = torch.randn(args.n_sample, args.latent, device=device)  # n_sample=64
-    ssim_loss = MS_SSIM(win_size=11, win_sigma=1.5, data_range=1, size_average=True, channel=3)
+    ms_ssim_metric = MS_SSIM(win_size=11, win_sigma=1.5, data_range=1, size_average=True, channel=3)
+    ssim_metric=SSIM(data_range=1,size_average=True,channel=3)
     ## watch model grad and paras
     # grd = (generator, render, discriminator)
-    # wandb.watch(generator, criterion=None, log="all", log_freq=100, log_graph=True)
+    wandb.watch(generator, criterion=None, log="all", log_freq=100, log_graph=True)
     wandb.watch(render, criterion=None, log="all", log_freq=100, log_graph=True)
-    wandb.watch(discriminator, criterion=None, log="all", log_freq=100, log_graph=True)
+    # wandb.watch(discriminator, criterion=None, log="all", log_freq=100, log_graph=True)
 
     # wandb.watch(grd, criterion=None, log="all", log_freq=100, log_graph=True, idx=0)
     # wandb.watch(grd, criterion=d_logistic_loss, log="all", log_freq=100, log_graph=True, idx=1)
@@ -201,8 +205,7 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, rende
         requires_grad(discriminator, True)
 
         noise = mixing_noise(args.batch, args.latent, args.mixing, device)
-        fake_img_feature, _ = generator(noise)
-        fake_img = render(fake_img_feature, h=args.size, w=args.size)
+        fake_img, _ = generator(noise)
 
         if args.augment:
             real_img_aug, _ = augment(real_img, ada_aug_p)
@@ -254,8 +257,7 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, rende
         requires_grad(discriminator, False)
         requires_grad(render, True)
         noise = mixing_noise(args.batch, args.latent, args.mixing, device)
-        fake_img_feature, _ = generator(noise)
-        fake_img = render(fake_img_feature, h=args.size, w=args.size)
+        fake_img, fake_img_feature = generator(noise)
 
         if args.augment:
             fake_img, _ = augment(fake_img, ada_aug_p)
@@ -266,39 +268,24 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, rende
         loss_dict["g"] = g_loss
 
         generator.zero_grad()
-        render.zero_grad()
 
         g_loss.backward()
         g_optim.step()
-        r_optim.step()
 
-        # phase 4: R reg
+
+        # phase 4: R train
         render.zero_grad()
-        fake_img_re = render(fake_img_feature.detach(), h=args.size, w=args.size)
+        fake_img_render = render(fake_img_feature, h=args.size, w=args.size)
+        fake_img_gt=fake_img.detach()
         # _ssim_loss = 1 - ssim_loss((fake_img.detach() + 1) / 2, (fake_img_re + 1) / 2)
-        _ssim_loss=my_ssim_loss(ssim_loss((fake_img.detach() + 1) / 2, (fake_img_re + 1) / 2))
+        ms_ssim_m=ms_ssim_metric((fake_img_render + 1) / 2, (fake_img_gt + 1) / 2)
+        ssim_m=ssim_metric((fake_img_render + 1) / 2, (fake_img_gt + 1) / 2)
+        _ssim_loss = my_ssim_loss(ms_ssim_m)
         _ssim_loss.backward()
         r_optim.step()
 
-        with torch.no_grad():
-            fake_img_re2 = render(fake_img_feature, h=args.size, w=args.size)
-            ssim_01 = 1 - _ssim_loss
-            ssim_12 = ssim((fake_img_re + 1) / 2, (fake_img_re2 + 1) / 2)
-            ssim_02 = ssim((fake_img + 1) / 2, (fake_img_re2 + 1) / 2)
-            loss_dict["ssim_01"] = ssim_01
-            loss_dict["ssim_12"] = ssim_12
-            loss_dict["ssim_02"] = ssim_02
-            if i % 1000 == 0:
-                svimg = torch.cat((fake_img, fake_img_re), 0)
-                svimg = torch.cat((svimg, fake_img_re2), 0)
-                sv_name = os.path.join(save_path, f"{str(i).zfill(6)}_ssim.png")
-                utils.save_image(
-                    svimg,
-                    sv_name,
-                    nrow=int(args.batch),
-                    normalize=True,
-                    range=(-1, 1),
-                )
+        loss_dict["ms_ssim"] = ssim_m
+        loss_dict["ssim"] = ms_ssim_m
 
         # phase 5: G reg
         g_regularize = i % args.g_reg_every == 0
@@ -314,7 +301,6 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, rende
             )
 
             generator.zero_grad()
-            # render.zero_grad()
             # weighted_path_loss = args.path_regularize * args.g_reg_every * path_loss
             weighted_path_loss = gplr_loss(args.path_regularize, args.g_reg_every, path_loss)
 
@@ -344,9 +330,9 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, rende
         real_score_val = loss_reduced["real_score"].mean().item()
         fake_score_val = loss_reduced["fake_score"].mean().item()
         path_length_val = loss_reduced["path_length"].mean().item()
-        ssim_01_val = loss_dict["ssim_01"].mean().item()
-        ssim_12_val = loss_dict["ssim_12"].mean().item()
-        ssim_02_val = loss_dict["ssim_02"].mean().item()
+        ssim_val = loss_dict["ssim"].mean().item()
+        ms_ssim_val = loss_dict["ms_ssim"].mean().item()
+
 
         if get_rank() == 0:
             pbar.set_description(
@@ -370,21 +356,28 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, rende
                         "Real Score": real_score_val,
                         "Fake Score": fake_score_val,
                         "Path Length": path_length_val,
-                        "ssim 01": ssim_01_val,
-                        "ssim 12": ssim_12_val,
-                        "ssim 02": ssim_02_val,
+                        "ssim": ssim_val,
+                        "ms_ssim": ms_ssim_val,
                     }
                 )
 
             if i % 1000 == 0:
                 with torch.no_grad():
                     g_ema.eval()
-                    sample_feature, _ = g_ema([sample_z])
-                    sample = render(sample_feature, h=args.size, w=args.size)
-                    fname = os.path.join(save_path, f"{str(i).zfill(6)}.png")
+                    sample, sample_feature = g_ema([sample_z])
+                    sample_render = render(sample_feature, h=args.size, w=args.size)
+                    fname1 = os.path.join(save_path, f"{str(i).zfill(6)}.png")
+                    fname2 = os.path.join(save_path, f"{str(i).zfill(6)}_render.png")
                     utils.save_image(
                         sample,
-                        fname,
+                        fname1,
+                        nrow=int(args.n_sample ** 0.5),
+                        normalize=True,
+                        range=(-1, 1),
+                    )
+                    utils.save_image(
+                        sample_render,
+                        fname2,
                         nrow=int(args.n_sample ** 0.5),
                         normalize=True,
                         range=(-1, 1),
@@ -410,17 +403,18 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, rende
 
 if __name__ == "__main__":
     device = "cuda:1"
-    train_describe = 'dev idea for R regular ms-ssim training'
+    train_describe = 'dev idea for style-liif v2'
 
     parser = argparse.ArgumentParser(description="StyleGAN2 trainer")
 
-    parser.add_argument("--path", type=str, default="/home/sunlab/2021Studets/gaochao/datasets/style/lmdb_256",help="path to the lmdb dataset")
+    parser.add_argument("--path", type=str, default="/home/sunlab/2021Studets/gaochao/datasets/style/lmdb_256",
+                        help="path to the lmdb dataset")
     parser.add_argument('--arch', type=str, default='stylegan2', help='model architectures (stylegan2 | swagan)')
     parser.add_argument(
         "--iter", type=int, default=800000, help="total training iterations"
     )
     parser.add_argument(
-        "--batch", type=int, default=4, help="batch sizes for each gpus"
+        "--batch", type=int, default=16, help="batch sizes for each gpus"
     )
     parser.add_argument(
         "--n_sample",
@@ -467,7 +461,7 @@ if __name__ == "__main__":
         default=None,
         help="path to the checkpoints to resume training",
     )
-    parser.add_argument("--lr", type=float, default=0.0001, help="learning rate")# 0.002
+    parser.add_argument("--lr", type=float, default=0.002, help="learning rate")  # 0.002
     parser.add_argument(
         "--channel_multiplier",
         type=int,
@@ -510,27 +504,33 @@ if __name__ == "__main__":
     parser.add_argument(
         "--feature_channel",
         type=int,
-        default=64,
-        help="probability update interval of the adaptive augmentation",
-    )
-    parser.add_argument(
-        "--feature_size",
-        type=int,
         default=128,
         help="probability update interval of the adaptive augmentation",
     )
     parser.add_argument(
+        "--feat_unfold",
+        type=bool,
+        default=False,
+        help="feat unfold to 9 x channel",
+    )
+    parser.add_argument(
+        "--feature_size",
+        type=int,
+        default=256,
+        help="feature map size of last block of styleGAN2",
+    )
+    parser.add_argument(
         "--expnum",
         type=int,
-        default=5,
-        help="probability update interval of the adaptive augmentation",
+        default=0,
+        help="num of exp",
     )
 
     args = parser.parse_args()
 
     n_gpu = int(os.environ["WORLD_SIZE"]) if "WORLD_SIZE" in os.environ else 1
     args.distributed = n_gpu > 1
-    print('gpu_use: ', n_gpu)
+    print('gpu_use_num: ', n_gpu)
 
     if args.distributed:
         torch.cuda.set_device(args.local_rank)
@@ -538,7 +538,7 @@ if __name__ == "__main__":
         synchronize()
 
     # set save path
-    expgroup = "exp2"
+    expgroup = "exp3"
     save_name = "style-liif_v" + str(args.expnum)
     save_path = os.path.join('./save/' + expgroup, save_name)
     log, writer = utils_me.set_save_path(save_path)
@@ -549,23 +549,25 @@ if __name__ == "__main__":
     args.start_iter = 0
 
     if args.arch == 'stylegan2':
-        from model import Generator_liif, Discriminator, LIIF_render
+        from model import Generator, Discriminator, LIIF_render
 
     elif args.arch == 'swagan':
         from swagan import Generator, Discriminator
 
-    generator = Generator_liif(
-        args.size, args.latent, args.n_mlp, channel_multiplier=args.channel_multiplier,
-        feature_channel=args.feature_channel, feature_size=args.feature_size).to(device)
+    generator = Generator(
+        args.size, args.latent, args.n_mlp, channel_multiplier=args.channel_multiplier).to(device)
     discriminator = Discriminator(
         args.size, channel_multiplier=args.channel_multiplier
     ).to(device)
-    g_ema = Generator_liif(
-        args.size, args.latent, args.n_mlp, channel_multiplier=args.channel_multiplier,
-        feature_channel=args.feature_channel, feature_size=args.feature_size).to(device)
+    g_ema = Generator(
+        args.size, args.latent, args.n_mlp, channel_multiplier=args.channel_multiplier).to(device)
     g_ema.eval()
-    render = LIIF_render(feature_channel=args.feature_channel).to(device)
+    render = LIIF_render(feature_channel=args.feature_channel, feat_unfold=args.feat_unfold).to(device)
 
+    # network info
+    # stat(generator, (1,512))
+    # stat(discriminator, (3, 256, 256))
+    # stat(render, (128, 256, 256))
     accumulate(g_ema, generator, 0)
 
     g_reg_ratio = args.g_reg_every / (args.g_reg_every + 1)
@@ -583,7 +585,7 @@ if __name__ == "__main__":
     )
     r_optim = optim.Adam(
         render.parameters(),
-        lr=args.lr,
+        lr=args.lr * 0.1,  # 0.002 --> 0.0002
         betas=(0, 0.99),
     )
 
@@ -662,6 +664,7 @@ if __name__ == "__main__":
         "lr": args.lr,
         "r1": args.r1,
         "mixing": args.mixing,
+        "feat_unfold": args.feat_unfold,
         "path_regularize": args.path_regularize,
         "path_batch_shrink": args.path_batch_shrink,
         "d_reg_every": args.d_reg_every,
